@@ -1,0 +1,13 @@
+<class_libraries>
+  <library path="easynav_alt_imu_sensor">
+    <class name="easynav_alt_imu_sensor/AltIMUPerceptionHandler"
+           type="easynav_alt_imu::AltIMUPerceptionHandler"
+           base_class_type="easynav::PerceptionHandler">
+      <description>
+        Alternative IMU perception handler. Behaves like the built-in
+        IMUPerceptionHandler but prints "imu alternative" to std::cerr
+        on every received message.
+      </description>
+    </class>
+  </library>
+</class_libraries>
