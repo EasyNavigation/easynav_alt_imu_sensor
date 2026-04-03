@@ -12,52 +12,96 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <iostream>
+
 #include <string>
 
 #include "sensor_msgs/msg/imu.hpp"
+
+#include "rclcpp/time.hpp"
+#include "rclcpp_lifecycle/lifecycle_node.hpp"
 
 #include "easynav_alt_imu_sensor/AltIMUPerceptionHandler.hpp"
 
 namespace easynav_alt_imu
 {
 
-rclcpp::SubscriptionBase::SharedPtr
-AltIMUPerceptionHandler::create_subscription(
-  const std::string & topic,
-  const std::string & type,
-  std::shared_ptr<easynav::PerceptionBase> target,
-  rclcpp::CallbackGroup::SharedPtr cb_group)
+
+void AltIMUPerceptionHandler::on_initialize()
 {
-  if (type != "sensor_msgs/msg/Imu") {
-    throw std::runtime_error(
-      "Unsupported message type for AltIMUPerceptionHandler: " + type);
+  // Create the perception data instance
+  perception_data_ = std::make_shared<easynav::IMUPerception>();
+
+  // Get sensor parameters
+  auto node = get_node();
+  std::string topic, msg_type;
+
+  if (!node->has_parameter(get_sensor_name() + ".topic")) {
+    node->declare_parameter(get_sensor_name() + ".topic", std::string{});
+  }
+  if (!node->has_parameter(get_sensor_name() + ".type")) {
+    node->declare_parameter(get_sensor_name() + ".type", std::string{});
   }
 
-  auto & node = *get_node();
+  node->get_parameter(get_sensor_name() + ".topic", topic);
+  node->get_parameter(get_sensor_name() + ".type", msg_type);
+
+  // Setup subscription
   auto options = rclcpp::SubscriptionOptions();
-  options.callback_group = cb_group;
+  options.callback_group = get_realtime_cbg();
 
-  const auto clock_type = node.get_clock()->get_clock_type();
+  const auto clock_type = node->get_clock()->get_clock_type();
 
-  return node.create_subscription<sensor_msgs::msg::Imu>(
+  if (msg_type != "sensor_msgs/msg/Imu") {
+    throw std::runtime_error("Unsupported message type for AltIMUPerceptionHandler: " + msg_type);
+  }
+
+  perception_sub_ = node->create_subscription<sensor_msgs::msg::Imu>(
     topic, rclcpp::QoS(1),
-    [target, clock_type](const sensor_msgs::msg::Imu::SharedPtr msg)
+    [this, clock_type](const sensor_msgs::msg::Imu::SharedPtr msg)
     {
-      std::cerr << "imu alternative\n";
-
-      auto typed_target = std::dynamic_pointer_cast<easynav::IMUPerception>(target);
-      typed_target->stamp = rclcpp::Time(msg->header.stamp, clock_type);
-      typed_target->frame_id = msg->header.frame_id;
-      typed_target->new_data = true;
-      typed_target->data = *msg;
-      typed_target->valid = true;
+      std::cerr << "Alternative IMUPerceptionHandler received IMU message" << std::endl;
+      perception_data_->stamp = rclcpp::Time(msg->header.stamp, clock_type);
+      perception_data_->frame_id = msg->header.frame_id;
+      perception_data_->new_data = true;
+      perception_data_->data = *msg;
+      perception_data_->valid = true;
     },
     options);
 }
 
+bool AltIMUPerceptionHandler::cycle_rt(std::shared_ptr<easynav::NavState> nav_state)
+{
+  // Store the perception in the easynav::NavState
+  nav_state->set(get_sensor_name(), perception_data_);
+  // Check if there was new data to trigger process and reset new_data state
+  const bool should_trigger = perception_data_->new_data;
+  perception_data_->new_data = false;
+  return should_trigger;
+}
+
+rclcpp::Time get_latest_imu_perceptions_stamp(const IMUPerceptions & perceptions)
+{
+  auto is_newer = [](const rclcpp::Time & a, const rclcpp::Time & b) {
+      if (a.get_clock_type() == b.get_clock_type()) {
+        return a > b;
+      }
+      return a.nanoseconds() > b.nanoseconds();
+    };
+
+  rclcpp::Time latest_stamp;
+  bool inited = false;
+
+  for (const auto & perception : perceptions) {
+    if (!inited || is_newer(perception->stamp, latest_stamp)) {
+      latest_stamp = perception->stamp;
+      inited = true;
+    }
+  }
+  return latest_stamp;
+}
+
+
 }  // namespace easynav_alt_imu
 
 #include "pluginlib/class_list_macros.hpp"
-PLUGINLIB_EXPORT_CLASS(
-  easynav_alt_imu::AltIMUPerceptionHandler, easynav::PerceptionHandler)
+PLUGINLIB_EXPORT_CLASS(easynav_alt_imu::AltIMUPerceptionHandler, easynav::PerceptionHandler)
